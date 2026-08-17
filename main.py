@@ -142,3 +142,15 @@ def bootstrap_mobile():
                     ("demo@ozertzon.com", bcrypt.hash("Ozertzon2026!"),
                      "Roberto Gómez, DVM", "OWNER", f))
     return {"status": "¡Éxito! Datos de prueba creados. Ya puedes loguearte."}
+@app.get("/debug/db")
+def debug_db():
+    import os as _os
+    url = _os.environ.get("DATABASE_URL", "")
+    try:
+        with conn() as c, c.cursor() as cur:
+            cur.execute("SELECT count(*) FROM fincas")
+            n = cur.fetchone()[0]
+        return {"status": "ok", "fincas": n, "url_set": bool(url)}
+    except Exception as e:
+        return {"status": "error", "url_set": bool(url),
+                "url_prefix": url[:25], "detail": str(e)}
