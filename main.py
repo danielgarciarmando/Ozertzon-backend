@@ -154,3 +154,14 @@ def debug_db():
     except Exception as e:
         return {"status": "error", "url_set": bool(url),
                 "url_prefix": url[:25], "detail": str(e)}
+        PAIR: dict = {}   # demo en memoria (RFC 8628 simplificado)
+
+@app.get("/auth/attach")
+def attach(code: str, token: str = ""):
+    code = code.upper()
+    if token:                      # lo llama tu navegador REAL (pega el token aquí)
+        PAIR[code] = token
+        return {"status": "vinculado"}
+    t = PAIR.pop(code, None)       # lo llama la APP (recoge y borra)
+    if not t: raise HTTPException(404, "pendiente")
+    return {"access_token": t}
