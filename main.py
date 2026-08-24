@@ -1,29 +1,39 @@
-import sentry_sdk
-from sentry_sdk.integrations.fastapi import FastApiIntegration
-
-SENTRY_DSN = os.environ.get("SENTRY_DSN")
-if SENTRY_DSN:
-    try:
-        sentry_sdk.init(dsn=SENTRY_DSN, traces_sample_rate=0.1,
-                        integrations=[FastApiIntegration()])
-    except Exception as e:
-        print(f"Sentry no inicializado: {e}")
-import hashlib, hmac, json, os, uuid
+import os
+import hashlib
+import hmac
+import json
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import psycopg2
+import sentry_sdk
 from fastapi import Depends, FastAPI, HTTPException, Request
 from jose import JWTError, jwt
 from passlib.hash import bcrypt
 from pydantic import BaseModel
+from sentry_sdk.integrations.fastapi import FastAPIIntegration
 
+# ===== CONFIGURACIÓN DE SENTRY =====
+SENTRY_DSN = os.environ.get("SENTRY_DSN")
+if SENTRY_DSN:
+    try:
+        sentry_sdk.init(
+            dsn=SENTRY_DSN,
+            traces_sample_rate=0.1,
+            integrations=[FastAPIIntegration()]
+        )
+    except Exception as e:
+        print(f"Sentry no inicializado: {e}")
+
+# ===== CONFIGURACIÓN DE APP Y VARIABLES =====
 DB = os.environ.get("DATABASE_URL", "postgresql://ozertzon:ozertzon@db:5432/ozertzon")
 JWT_SECRET = os.environ.get("JWT_SECRET", "OZ-JWT-SECRET-CHANGE-ME")
 ALG = "HS256"
 app = FastAPI(title="Ozertzon 360 API", version="3.1")
 
-def conn(): return psycopg2.connect(DB)
+def conn(): 
+    return psycopg2.connect(DB)
 
 class Login(BaseModel):
     email: str
@@ -274,7 +284,6 @@ async def sync_delta(request: Request, user=Depends(get_user)):
                       json.dumps(m.get("payload", {})), data.get("client_sync_time")))
                 applied.append(mid)
             except Exception as ex:
-                # Log error pero no rompas el batch
                 print(f"Error applying mutation {mid}: {ex}")
     return {"applied": applied, "skipped_idempotent": skipped}
 
@@ -319,18 +328,15 @@ def bootstrap_mobile():
         cur.execute("INSERT INTO fincas(name) VALUES ('Hato San José') RETURNING id")
         f = cur.fetchone()[0]
         
-        # Lotes iniciales
         for n in ("L1", "L2"):
             cur.execute("INSERT INTO lots(finca_id, name) VALUES (%s,%s)", (f, n))
         
-        # Usuario demo
         cur.execute("""
             INSERT INTO users(email, password_hash, full_name, role, finca_id)
             VALUES (%s,%s,%s,%s,%s)
         """, ("demo@ozertzon.com", bcrypt.hash("Ozertzon2026!"),
               "Roberto Gómez, DVM", "OWNER", f))
         
-        # Protocolos de catálogo
         for proto in [
             ("Desparasitación TST", "Ivermectina", 0.05, 1.0, "SC", 14, "SANITARIO", "GENERAL"),
             ("Vacuna Clostridial", "Vacuna 8vías", 1.0, None, "IM", 0, "SANITARIO", "GENERAL"),
@@ -342,7 +348,6 @@ def bootstrap_mobile():
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """, (f, *proto))
         
-        # Protocolo NEONATAL con pasos
         cur.execute("""
             INSERT INTO protocols(finca_id, name, product, dose_per_kg, route, category, ptype)
             VALUES (%s,'Neonatal Completo','Mix',0.0,'SC','NEONATAL','NEONATAL') RETURNING id
@@ -367,7 +372,7 @@ def debug_db():
         return {"status": "error", "url_set": bool(url),
                 "url_prefix": url[:25], "detail": str(e)}
 
-PAIR: dict = {}  # demo en memoria (RFC 8628 simplificado)
+PAIR: dict = {}
 
 @app.get("/auth/attach")
 def attach(code: str, token: str = ""):
