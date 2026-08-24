@@ -1,18 +1,13 @@
 import sentry_sdk
 from sentry_sdk.integrations.fastapi import FastApiIntegration
-from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
 
 SENTRY_DSN = os.environ.get("SENTRY_DSN")
 if SENTRY_DSN:
-    sentry_sdk.init(
-        dsn=SENTRY_DSN,
-        environment=os.environ.get("ENVIRONMENT", "production"),
-        traces_sample_rate=0.1,  # 10% de requests para performance
-        integrations=[
-            FastApiIntegration(),
-            SqlalchemyIntegration(),
-        ],
-    )
+    try:
+        sentry_sdk.init(dsn=SENTRY_DSN, traces_sample_rate=0.1,
+                        integrations=[FastApiIntegration()])
+    except Exception as e:
+        print(f"Sentry no inicializado: {e}")
 import hashlib, hmac, json, os, uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
