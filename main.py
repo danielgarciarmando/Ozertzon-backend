@@ -14,17 +14,14 @@ from passlib.hash import bcrypt
 from pydantic import BaseModel
 from sentry_sdk.integrations.fastapi import FastAPIIntegration
 
-# ===== CONFIGURACIÓN DE SENTRY =====
+# ---- Sentry opcional y a prueba de versiones ----
 SENTRY_DSN = os.environ.get("SENTRY_DSN")
 if SENTRY_DSN:
     try:
-        sentry_sdk.init(
-            dsn=SENTRY_DSN,
-            traces_sample_rate=0.1,
-            integrations=[FastAPIIntegration()]
-        )
+        import sentry_sdk
+        sentry_sdk.init(dsn=SENTRY_DSN, traces_sample_rate=0.1)
     except Exception as e:
-        print(f"Sentry no inicializado: {e}")
+        print(f"Sentry no inicializado (no bloqueante): {e}")
 
 # ===== CONFIGURACIÓN DE APP Y VARIABLES =====
 DB = os.environ.get("DATABASE_URL", "postgresql://ozertzon:ozertzon@db:5432/ozertzon")
