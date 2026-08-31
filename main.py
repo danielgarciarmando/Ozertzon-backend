@@ -7,12 +7,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import psycopg2
-import sentry_sdk
 from fastapi import Depends, FastAPI, HTTPException, Request
 from jose import JWTError, jwt
 from passlib.hash import bcrypt
 from pydantic import BaseModel
-from sentry_sdk.integrations.fastapi import FastAPIIntegration
 
 # ---- Sentry opcional y a prueba de versiones ----
 SENTRY_DSN = os.environ.get("SENTRY_DSN")
@@ -125,33 +123,50 @@ def apply_mutation(cur, finca, m):
         cur.execute("UPDATE animals SET current_weight=%s, updated_at=NOW() WHERE id=%s",
                     (p.get("kg"), au))
     
-    # ===== SANIDAD (health_logs) =====
+    # ===== SANIDAD (health_logs) — con withdrawal_until =====
     elif e == "health_logs":
         au = resolve_id(cur, finca, "animals", p.get("animal"))
         cur.execute("""
             INSERT INTO health_logs(id, animal_id, protocol_name, famacha_score, applied_dose_ml,
-                sync_hash, performed_by_user_id, date)
-            VALUES (%s,%s,%s,%s,%s,%s,(SELECT id FROM users WHERE finca_id=%s LIMIT 1),%s)
+                sync_hash, performed_by_user_id, date, withdrawal_until)
+            VALUES (%s,%s,%s,%s,%s,%s,(SELECT id FROM users WHERE finca_id=%s LIMIT 1),%s,%s)
         """, (uuid.uuid4(), au, p.get("protocol", "Protocolo"), p.get("famacha"),
-              p.get("dose"), (m.get("id") or "")[:64], finca, p.get("date")))
+              p.get("dose"), (m.get("id") or "")[:64], finca, p.get("date"),
+              p.get("withdrawal_until", "")))
     
-    # ===== PROTOCOLOS =====
+    # ===== PROTOCOLOS — con item_id (enlace a inventario) =====
     elif e == "protocols":
         if a == "CREATE":
             pid = resolve_id(cur, finca, "protocols", p.get("id"))
+            item_uuid = None
+            if p.get("item_id"):
+                item_uuid = resolve_id(cur, finca, "inventory_items", p.get("item_id"))
             cur.execute("""
                 INSERT INTO protocols(id, finca_id, name, product, dose_per_kg, concentration,
-                    route, withdrawal_days, category, ptype)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    route, withdrawal_days, category, ptype, item_id)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (id) DO NOTHING
             """, (pid, finca, p.get("name"), p.get("product"), p.get("dose_per_kg"),
                   p.get("concentration"), p.get("route"), p.get("withdrawal_days", 0),
-                  p.get("category"), p.get("ptype", "GENERAL")))
+                  p.get("category"), p.get("ptype", "GENERAL"), item_uuid))
             for step in p.get("steps", []):
                 cur.execute("""
                     INSERT INTO protocol_steps(protocol_id, day_offset, action)
                     VALUES (%s,%s,%s)
                 """, (pid, step.get("day"), step.get("action")))
+        elif a == "UPDATE":
+            pid = resolve_id(cur, finca, "protocols", p.get("id"))
+            item_uuid = None
+            if p.get("item_id"):
+                item_uuid = resolve_id(cur, finca, "inventory_items", p.get("item_id"))
+            cur.execute("""
+                UPDATE protocols SET
+                    name=%s, product=%s, dose_per_kg=%s, concentration=%s, route=%s,
+                    withdrawal_days=%s, category=%s, ptype=%s, item_id=%s
+                WHERE id=%s
+            """, (p.get("name"), p.get("product"), p.get("dose_per_kg"),
+                  p.get("concentration"), p.get("route"), p.get("withdrawal_days", 0),
+                  p.get("category"), p.get("ptype", "GENERAL"), item_uuid, pid))
     
     # ===== ALIMENTACIÓN =====
     elif e == "feeding_logs":
@@ -232,7 +247,7 @@ def apply_mutation(cur, finca, m):
             ON CONFLICT (id) DO NOTHING
         """, (tid, finca, p.get("title"), p.get("assigned"), p.get("done", False),
               p.get("priority"), p.get("started_at"), p.get("completed_at"),
-              p.get("note"), p.get("verified", False), p.get("due_date"), p.get("source")))
+              p.get("note"), p.get("verified", False), p.get("due_date"), p.get("source", "MANUAL")))
     
     # ===== POTREROS =====
     elif e == "paddocks":
@@ -264,6 +279,7 @@ async def sync_delta(request: Request, user=Depends(get_user)):
                                hmac.new(key, raw, hashlib.sha256).hexdigest()):
         raise HTTPException(401, "Firma HMAC inválida (no-repudio TRD 2.4)")
     data = json.loads(raw)
+    device_id = data.get("device_id", "unknown")
     applied, skipped = [], 0
     with conn() as c, c.cursor() as cur:
         for m in data.get("mutations", []):
@@ -275,10 +291,10 @@ async def sync_delta(request: Request, user=Depends(get_user)):
             try:
                 apply_mutation(cur, user["finca"], m)
                 cur.execute("""
-                    INSERT INTO sync_ledger(mutation_id, finca_id, entity, action, payload, client_time)
-                    VALUES (%s,%s,%s,%s,%s,%s)
+                    INSERT INTO sync_ledger(mutation_id, finca_id, entity, action, payload, client_time, device_id)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s)
                 """, (mid, user["finca"], m.get("entity"), m.get("action"),
-                      json.dumps(m.get("payload", {})), data.get("client_sync_time")))
+                      json.dumps(m.get("payload", {})), data.get("client_sync_time"), device_id))
                 applied.append(mid)
             except Exception as ex:
                 print(f"Error applying mutation {mid}: {ex}")
