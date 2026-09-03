@@ -25,7 +25,7 @@ if SENTRY_DSN:
 DB = os.environ.get("DATABASE_URL", "postgresql://ozertzon:ozertzon@db:5432/ozertzon")
 JWT_SECRET = os.environ.get("JWT_SECRET", "OZ-JWT-SECRET-CHANGE-ME")
 ALG = "HS256"
-app = FastAPI(title="Ozertzon 360 API", version="3.1")
+app = FastAPI(title="Ozertzon 360 API", version="3.2")
 
 def conn(): 
     return psycopg2.connect(DB)
@@ -36,7 +36,7 @@ class Login(BaseModel):
 
 @app.get("/healthz")
 def healthz():
-    return {"status": "ok", "version": "3.1"}
+    return {"status": "ok", "version": "3.2"}
 
 @app.post("/auth/login")
 def login(b: Login):
@@ -123,7 +123,7 @@ def apply_mutation(cur, finca, m):
         cur.execute("UPDATE animals SET current_weight=%s, updated_at=NOW() WHERE id=%s",
                     (p.get("kg"), au))
     
-    # ===== SANIDAD (health_logs) — con withdrawal_until =====
+    # ===== SANIDAD (health_logs) — con withdrawal_until arreglado =====
     elif e == "health_logs":
         au = resolve_id(cur, finca, "animals", p.get("animal"))
         cur.execute("""
@@ -132,7 +132,7 @@ def apply_mutation(cur, finca, m):
             VALUES (%s,%s,%s,%s,%s,%s,(SELECT id FROM users WHERE finca_id=%s LIMIT 1),%s,%s)
         """, (uuid.uuid4(), au, p.get("protocol", "Protocolo"), p.get("famacha"),
               p.get("dose"), (m.get("id") or "")[:64], finca, p.get("date"),
-              p.get("withdrawal_until", "")))
+              p.get("withdrawal_until") or None))
     
     # ===== PROTOCOLOS — con item_id (enlace a inventario) =====
     elif e == "protocols":
@@ -280,7 +280,7 @@ async def sync_delta(request: Request, user=Depends(get_user)):
         raise HTTPException(401, "Firma HMAC inválida (no-repudio TRD 2.4)")
     data = json.loads(raw)
     device_id = data.get("device_id", "unknown")
-    applied, skipped = [], 0
+    applied, skipped, errors = [], 0, []
     with conn() as c, c.cursor() as cur:
         for m in data.get("mutations", []):
             mid = m.get("id") or str(uuid.uuid4())
@@ -298,7 +298,8 @@ async def sync_delta(request: Request, user=Depends(get_user)):
                 applied.append(mid)
             except Exception as ex:
                 print(f"Error applying mutation {mid}: {ex}")
-    return {"applied": applied, "skipped_idempotent": skipped}
+                errors.append({"id": mid, "entity": m.get("entity"), "error": str(ex)})
+    return {"applied": applied, "skipped_idempotent": skipped, "errors": errors}
 
 @app.get("/api/v1/sync/delta")
 def pull(last_pulled_at: str, user=Depends(get_user)):
@@ -380,7 +381,7 @@ def debug_db():
         with conn() as c, c.cursor() as cur:
             cur.execute("SELECT count(*) FROM fincas")
             n = cur.fetchone()[0]
-        return {"status": "ok", "fincas": n, "url_set": bool(url), "version": "3.1"}
+        return {"status": "ok", "fincas": n, "url_set": bool(url), "version": "3.2"}
     except Exception as e:
         return {"status": "error", "url_set": bool(url),
                 "url_prefix": url[:25], "detail": str(e)}
@@ -397,3 +398,28 @@ def attach(code: str, token: str = ""):
     if not t:
         raise HTTPException(404, "pendiente")
     return {"access_token": t}
+
+# ===== AUTODIAGNÓSTICO DE ESQUEMA =====
+EXPECTED = {
+ "animals": [("breed","TEXT"),("birth_date","DATE"),("sire_id","UUID"),("dam_id","UUID"),
+   ("repro_status","TEXT"),("breeding_date","DATE"),("pregnancy_confirmed_date","DATE"),
+   ("pregnancy_method","TEXT"),("rearing","TEXT"),("active","BOOLEAN"),("updated_at","TIMESTAMPTZ")],
+ "health_logs": [("date","DATE"),("withdrawal_until","DATE")],
+ "protocols": [("item_id","UUID")],
+ "sync_ledger": [("device_id","TEXT")],
+ "tasks": [("due_date","DATE"),("source","TEXT")],
+ "rearing_milk_logs": [("donor_animal_id","UUID")],
+}
+
+@app.get("/debug/schema")
+def schema_check():
+    missing, sql = {}, []
+    with conn() as c, c.cursor() as cur:
+        for t, cols in EXPECTED.items():
+            cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name=%s", (t,))
+            have = {r[0] for r in cur.fetchall()}
+            if not have: missing[t] = "TABLE_MISSING"; continue
+            for name, typ in cols:
+                if name not in have:
+                    missing.setdefault(t, []).append(name)
+                    sql.append(f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS {name
