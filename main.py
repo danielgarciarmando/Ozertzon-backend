@@ -1,3 +1,31 @@
+from fastapi import Form
+from fastapi.responses import HTMLResponse
+
+@app.get("/pair", response_class=HTMLResponse)
+def pair_page(code: str):
+    return f"""<html><body style="font-family:sans-serif;background:#0B2A1E;color:#fff;
+display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0">
+<form method="post" action="/auth/attach_login" style="background:#123B2A;padding:28px;
+border-radius:20px;display:flex;flex-direction:column;gap:12px;min-width:280px">
+<h3 style="margin:0">Vincular dispositivo</h3>
+<input type="hidden" name="code" value="{code.upper()}">
+<input name="email" placeholder="correo" required style="padding:12px;border-radius:10px;border:0">
+<input name="password" type="password" placeholder="contraseña" required style="padding:12px;border-radius:10px;border:0">
+<button style="padding:14px;border-radius:12px;border:0;background:#D97706;color:#fff;font-weight:700">VINCULAR</button>
+</form></body></html>"""
+
+@app.post("/auth/attach_login")
+def attach_login(code: str = Form(), email: str = Form(), password: str = Form()):
+    with conn() as c, c.cursor() as cur:
+        cur.execute("SELECT id, password_hash, role, finca_id FROM users WHERE email=%s", (email,))
+        row = cur.fetchone()
+    if not row or not bcrypt.verify(password, row[1]):
+        return HTMLResponse("<h3 style='color:#C92A2A'>Credenciales inválidas</h3>", status_code=401)
+    token = jwt.encode({"sub": str(row[0]), "role": row[2], "finca": str(row[3]),
+        "exp": datetime.now(timezone.utc) + timedelta(hours=8)}, JWT_SECRET, algorithm=ALG)
+    PAIR[code.upper()] = token
+    return HTMLResponse("<h3 style='color:#2F7D4F'>✔ Dispositivo vinculado. Cierra esta pestaña.</h3>")
+# (conserva el GET /auth/attach actual: la app sigue haciendo polling y recoge el token)
 import os
 import hashlib
 import hmac
