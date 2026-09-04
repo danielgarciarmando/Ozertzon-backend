@@ -365,27 +365,61 @@ PAIR: dict = {}
 
 @app.get("/pair", response_class=HTMLResponse)
 def pair_page(code: str):
-    return f"""<html><body style="font-family:sans-serif;background:#0B2A1E;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0">
-<form method="post" action="/auth/attach_login" style="background:#123B2A;padding:28px;border-radius:20px;display:flex;flex-direction:column;gap:12px;min-width:280px">
-<h3 style="margin:0">Vincular dispositivo</h3>
-<input type="hidden" name="code" value="{code.upper()}">
-<input name="email" placeholder="correo" required style="padding:12px;border-radius:10px;border:0">
-<input name="password" type="password" placeholder="contraseña" required style="padding:12px;border-radius:10px;border:0">
-<button style="padding:14px;border-radius:12px;border:0;background:#D97706;color:#fff;font-weight:700">VINCULAR</button>
-</form></body></html>"""
+    cu = code.upper()
+    h = "<html><body style='font-family:sans-serif;"
+    h += "background:#0B2A1E;color:#fff;"
+    h += "display:flex;align-items:center;"
+    h += "justify-content:center;"
+    h += "min-height:100vh;margin:0'>"
+    h += "<form method='post'"
+    h += " action='/auth/attach_login'"
+    h += " style='background:#123B2A;padding:28px;"
+    h += "border-radius:20px;display:flex;"
+    h += "flex-direction:column;gap:12px;"
+    h += "min-width:280px'>"
+    h += "<h3 style='margin:0'>Vincular dispositivo</h3>"
+    h += "<input type='hidden' name='code'"
+    h += " value='" + cu + "'>"
+    h += "<input name='email'"
+    h += " placeholder='correo' required"
+    h += " style='padding:12px;border-radius:10px;"
+    h += "border:0'>"
+    h += "<input name='password' type='password'"
+    h += " placeholder='contraseña' required"
+    h += " style='padding:12px;border-radius:10px;"
+    h += "border:0'>"
+    h += "<button style='padding:14px;"
+    h += "border-radius:12px;border:0;"
+    h += "background:#D97706;color:#fff;"
+    h += "font-weight:700'>VINCULAR</button>"
+    h += "</form></body></html>"
+    return h
 
 @app.post("/auth/attach_login")
-def attach_login(code: str = Form(), email: str = Form(), password: str = Form()):
+def attach_login(code: str = Form(),
+                 email: str = Form(),
+                 password: str = Form()):
     with conn() as c, c.cursor() as cur:
-        cur.execute("SELECT id, password_hash, role, finca_id FROM users WHERE email=%s", (email,))
+        cur.execute(
+            "SELECT id, password_hash, role,"
+            " finca_id FROM users WHERE email=%s",
+            (email,))
         row = cur.fetchone()
     if not row or not bcrypt.verify(password, row[1]):
-        return HTMLResponse("<h3 style='color:#C92A2A'>Credenciales inválidas</h3>", status_code=401)
-    token = jwt.encode({"sub": str(row[0]), "role": row[2], "finca": str(row[3]),
-                        "exp": datetime.now(timezone.utc) + timedelta(hours=8)},
-                       JWT_SECRET, algorithm=ALG)
+        return HTMLResponse(
+            "<h3 style='color:#C92A2A'>"
+            "Credenciales inválidas</h3>",
+            status_code=401)
+    token = jwt.encode(
+        {"sub": str(row[0]), "role": row[2],
+         "finca": str(row[3]),
+         "exp": datetime.now(timezone.utc)
+         + timedelta(hours=8)},
+        JWT_SECRET, algorithm=ALG)
     PAIR[code.upper()] = token
-    return HTMLResponse("<h3 style='color:#2F7D4F'>✔ Dispositivo vinculado. Cierra esta pestaña.</h3>")
+    return HTMLResponse(
+        "<h3 style='color:#2F7D4F'>✔ Dispositivo"
+        " vinculado. Cierra esta pestaña.</h3>")
 
 @app.get("/auth/attach")
 def attach(code: str, token: str = ""):
@@ -399,7 +433,50 @@ def attach(code: str, token: str = ""):
     return {"access_token": t}
 
 EXPECTED = {
-    "animals": [("breed", "TEXT"), ("birth_date", "DATE"), ("sire_id", "UUID"), ("dam_id", "UUID"),
-                ("repro_status", "TEXT"), ("breeding_date", "DATE"), ("pregnancy_confirmed_date", "DATE"),
-                ("pregnancy_method", "TEXT"), ("rearing", "TEXT"), ("active", "BOOLEAN"), ("updated_at", "TIMESTAMPTZ")],
-    "healt
+    "animals": [
+        ("breed", "TEXT"),
+        ("birth_date", "DATE"),
+        ("sire_id", "UUID"),
+        ("dam_id", "UUID"),
+        ("repro_status", "TEXT"),
+        ("breeding_date", "DATE"),
+        ("pregnancy_confirmed_date", "DATE"),
+        ("pregnancy_method", "TEXT"),
+        ("rearing", "TEXT"),
+        ("active", "BOOLEAN"),
+        ("updated_at", "TIMESTAMPTZ")],
+    "health_logs": [
+        ("date", "DATE"),
+        ("withdrawal_until", "DATE")],
+    "protocols": [("item_id", "UUID")],
+    "sync_ledger": [("device_id", "TEXT")],
+    "tasks": [
+        ("due_date", "DATE"),
+        ("source", "TEXT")],
+    "rearing_milk_logs": [
+        ("donor_animal_id", "UUID")],
+}
+
+@app.get("/debug/schema")
+def schema_check():
+    missing, sql = {}, []
+    with conn() as c, c.cursor() as cur:
+        for t, cols in EXPECTED.items():
+            cur.execute(
+                "SELECT column_name FROM"
+                " information_schema.columns"
+                " WHERE table_name=%s", (t,))
+            have = set(r[0] for r in cur.fetchall())
+            if not have:
+                missing[t] = "TABLE_MISSING"
+                continue
+            for name, typ in cols:
+                if name not in have:
+                    missing.setdefault(t, [])
+                    missing[t].append(name)
+                    sql.append(
+                        "ALTER TABLE " + t
+                        + " ADD COLUMN IF NOT EXISTS "
+                        + name + " " + typ + ";")
+    return {"ok": not missing,
+            "missing": missing, "sql": sql}
