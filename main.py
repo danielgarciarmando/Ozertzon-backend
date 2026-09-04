@@ -450,4 +450,4 @@ def schema_check():
             for name, typ in cols:
                 if name not in have:
                     missing.setdefault(t, []).append(name)
-                    sql.append(f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS {name
+                    sql.append("ALTER TABLE " + t + " ADD COLUMN IF NOT EXISTS " + name + " " + typ + ";")
