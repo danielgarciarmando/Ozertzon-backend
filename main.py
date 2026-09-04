@@ -445,9 +445,13 @@ def schema_check():
     with conn() as c, c.cursor() as cur:
         for t, cols in EXPECTED.items():
             cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name=%s", (t,))
-            have = {r[0] for r in cur.fetchall()}
-            if not have: missing[t] = "TABLE_MISSING"; continue
+            have = set(r[0] for r in cur.fetchall())
+            if not have:
+                missing[t] = "TABLE_MISSING"
+                continue
             for name, typ in cols:
                 if name not in have:
                     missing.setdefault(t, []).append(name)
                     sql.append("ALTER TABLE " + t + " ADD COLUMN IF NOT EXISTS " + name + " " + typ + ";")
+    return {"ok": not missing, "missing": missing, "sql": sql}
+
