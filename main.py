@@ -26,7 +26,7 @@ if SENTRY_DSN:
 DB = os.environ.get("DATABASE_URL", "postgresql://ozertzon:ozertzon@db:5432/ozertzon")
 JWT_SECRET = os.environ.get("JWT_SECRET", "OZ-JWT-SECRET-CHANGE-ME")
 ALG = "HS256"
-app = FastAPI(title="Ozertzon 360 API", version="3.2")
+app = FastAPI(title="Ozertzon 360 API", version="3.3")
 
 def conn():
     return psycopg2.connect(DB)
@@ -37,7 +37,7 @@ class Login(BaseModel):
 
 @app.get("/healthz")
 def healthz():
-    return {"status": "ok", "version": "3.2"}
+    return {"status": "ok", "version": "3.3"}
 
 @app.post("/auth/login")
 def login(b: Login):
@@ -87,8 +87,9 @@ def apply_mutation(cur, finca, m):
             cur.execute("""
                 INSERT INTO animals(id, visual_tag_id, species, sex, breed, current_weight,
                     birth_date, sire_id, dam_id, repro_status, breeding_date,
-                    pregnancy_confirmed_date, pregnancy_method, rearing, finca_id)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    pregnancy_confirmed_date, pregnancy_method, rearing, finca_id,
+                    tattoo, display_name, born_in_herd, birth_estimated)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (id) DO NOTHING
             """, (au, p.get("tag", "?"), p.get("species", "OVINE"), p.get("sex", "F"),
                   p.get("breed", ""), p.get("kg"), p.get("birth_date"),
@@ -96,19 +97,24 @@ def apply_mutation(cur, finca, m):
                   resolve_id(cur, finca, "animals", p.get("dam_id")) if p.get("dam_id") else None,
                   p.get("repro_status", "OPEN"), p.get("breeding_date"),
                   p.get("pregnancy_confirmed_date"), p.get("pregnancy_method", ""),
-                  p.get("rearing", "MADRE"), finca))
+                  p.get("rearing", "MADRE"), finca,
+                  p.get("tattoo"), p.get("display_name"),
+                  bool(p.get("born_in_herd", False)),
+                  bool(p.get("birth_estimated", False))))
         elif a == "UPDATE":
             cur.execute("""
                 UPDATE animals SET
                     lot_id=(SELECT id FROM lots WHERE finca_id=%s AND name=%s),
                     breed=%s, current_weight=%s, repro_status=%s, breeding_date=%s,
                     pregnancy_confirmed_date=%s, pregnancy_method=%s, rearing=%s,
+                    tattoo=%s, display_name=%s, born_in_herd=%s, birth_estimated=%s,
                     updated_at=NOW()
                 WHERE id=%s
             """, (finca, p.get("lot", "L1"), p.get("breed", ""), p.get("kg"),
                   p.get("repro_status", "OPEN"), p.get("breeding_date"),
                   p.get("pregnancy_confirmed_date"), p.get("pregnancy_method", ""),
-                  p.get("rearing", "MADRE"), au))
+                  p.get("rearing", "MADRE"), p.get("tattoo"), p.get("display_name"),
+                  bool(p.get("born_in_herd", False)), bool(p.get("birth_estimated", False)), au))
 
     elif e == "weight_events":
         au = resolve_id(cur, finca, "animals", p.get("animal"))
@@ -158,6 +164,19 @@ def apply_mutation(cur, finca, m):
             """, (p.get("name"), p.get("product"), p.get("dose_per_kg"),
                   p.get("concentration"), p.get("route"), p.get("withdrawal_days", 0),
                   p.get("category"), p.get("ptype", "GENERAL"), item_uuid, pid))
+
+    elif e == "mating_periods":
+        mp = resolve_id(cur, finca, "mating_periods", m.get("id"))
+        sire = resolve_id(cur, finca, "animals", p.get("sire")) if p.get("sire") else None
+        if a == "CLOSE":
+            cur.execute("UPDATE mating_periods SET end_date=%s WHERE id=%s",
+                        (p.get("end"), mp))
+        else:
+            cur.execute("""
+                INSERT INTO mating_periods(id, finca_id, lot_name, sire_id, start_date, end_date)
+                VALUES (%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (id) DO NOTHING
+            """, (mp, finca, p.get("lot"), sire, p.get("start"), p.get("end")))
 
     elif e == "feeding_logs":
         cur.execute("""
@@ -250,8 +269,7 @@ def apply_mutation(cur, finca, m):
             VALUES (%s,%s,%s,%s,%s,%s,%s)
         """, (uuid.uuid4(), au, p.get("date"), p.get("liters"), p.get("source"),
               p.get("cost"), donor))
-
-@app.post("/api/v1/sync/delta")
+        @app.post("/api/v1/sync/delta")
 async def sync_delta(request: Request, user=Depends(get_user)):
     raw = await request.body()
     with conn() as c, c.cursor() as cur:
@@ -356,10 +374,36 @@ def debug_db():
         with conn() as c, c.cursor() as cur:
             cur.execute("SELECT count(*) FROM fincas")
             n = cur.fetchone()[0]
-        return {"status": "ok", "fincas": n, "url_set": bool(url), "version": "3.2"}
+        return {"status": "ok", "fincas": n, "url_set": bool(url), "version": "3.3"}
     except Exception as e:
         return {"status": "error", "url_set": bool(url),
                 "url_prefix": url[:25], "detail": str(e)}
+
+@app.get("/debug/schema")
+def debug_schema():
+    expected = {
+        "animals": [
+            ("tattoo", "TEXT"), ("display_name", "TEXT"),
+            ("born_in_herd", "BOOLEAN"), ("birth_estimated", "BOOLEAN")
+        ],
+        "mating_periods": [
+            ("lot_name", "TEXT"), ("sire_id", "UUID"),
+            ("start_date", "DATE"), ("end_date", "DATE")
+        ]
+    }
+    missing = []
+    with conn() as c, c.cursor() as cur:
+        for table, cols in expected.items():
+            for col_name, _ in cols:
+                cur.execute("""
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name=%s AND column_name=%s
+                """, (table, col_name))
+                if not cur.fetchone():
+                    missing.append(f"{table}.{col_name}")
+    if missing:
+        return {"ok": False, "missing": missing}
+    return {"ok": True}
 
 PAIR: dict = {}
 
@@ -427,56 +471,9 @@ def attach(code: str, token: str = ""):
     if token:
         PAIR[code] = token
         return {"status": "vinculado"}
-    t = PAIR.pop(code, None)
-    if not t:
-        raise HTTPException(404, "pendiente")
-    return {"access_token": t}
-
-EXPECTED = {
-    "animals": [
-        ("breed", "TEXT"),
-        ("birth_date", "DATE"),
-        ("sire_id", "UUID"),
-        ("dam_id", "UUID"),
-        ("repro_status", "TEXT"),
-        ("breeding_date", "DATE"),
-        ("pregnancy_confirmed_date", "DATE"),
-        ("pregnancy_method", "TEXT"),
-        ("rearing", "TEXT"),
-        ("active", "BOOLEAN"),
-        ("updated_at", "TIMESTAMPTZ")],
-    "health_logs": [
-        ("date", "DATE"),
-        ("withdrawal_until", "DATE")],
-    "protocols": [("item_id", "UUID")],
-    "sync_ledger": [("device_id", "TEXT")],
-    "tasks": [
-        ("due_date", "DATE"),
-        ("source", "TEXT")],
-    "rearing_milk_logs": [
-        ("donor_animal_id", "UUID")],
-}
-
-@app.get("/debug/schema")
-def schema_check():
-    missing, sql = {}, []
-    with conn() as c, c.cursor() as cur:
-        for t, cols in EXPECTED.items():
-            cur.execute(
-                "SELECT column_name FROM"
-                " information_schema.columns"
-                " WHERE table_name=%s", (t,))
-            have = set(r[0] for r in cur.fetchall())
-            if not have:
-                missing[t] = "TABLE_MISSING"
-                continue
-            for name, typ in cols:
-                if name not in have:
-                    missing.setdefault(t, [])
-                    missing[t].append(name)
-                    sql.append(
-                        "ALTER TABLE " + t
-                        + " ADD COLUMN IF NOT EXISTS "
-                        + name + " " + typ + ";")
-    return {"ok": not missing,
-            "missing": missing, "sql": sql}
+    t = PAIR.get(code)
+    if t:
+        del PAIR[code]
+        return {"access_token": t, "token_type": "bearer"}
+    return {"status": "esperando"}
+    
